@@ -36,6 +36,38 @@ PRESCAN_TABLE = os.environ.get('PRESCAN_TABLE', 'pdf-prescan-data')
 IN_FLIGHT_FILE_PREFIX = "file_"
 
 
+def convert_dynamodb_value(value):
+    """
+    Recursively convert DynamoDB values (Decimals, nested dicts/lists) to Python native types.
+    """
+    if isinstance(value, Decimal):
+        # Convert to int if it's a whole number, otherwise float
+        if value % 1 == 0:
+            return int(value)
+        return float(value)
+    elif isinstance(value, dict):
+        # Recursively convert dict values
+        return {k: convert_dynamodb_value(v) for k, v in value.items()}
+    elif isinstance(value, list):
+        # Recursively convert list items
+        return [convert_dynamodb_value(item) for item in value]
+    else:
+        return value
+
+
+def format_for_excel(value):
+    """
+    Format a value for Excel cell output.
+    Converts lists and dicts to readable strings.
+    """
+    if isinstance(value, list):
+        return ', '.join(str(v) for v in value)
+    elif isinstance(value, dict):
+        return json.dumps(value)
+    else:
+        return value
+
+
 def extract_collection_folder(s3_key: str) -> str:
     """
     Extract the collection folder from an S3 key.
@@ -75,50 +107,82 @@ def load_all_prescan_data() -> dict:
     """
     Load all prescan data from DynamoDB into a dictionary keyed by pdf_key.
     
-    This is more efficient than individual lookups when processing many records.
+    Note: The prescan table has a sort key (scan_timestamp), so there may be
+    multiple records per pdf_key. We keep the most recent one (last scanned).
     
     Returns:
         dict mapping pdf_key to prescan data dict
     """
     prescan_cache = {}
     
+    if not PRESCAN_TABLE:
+        logger.warning("PRESCAN_TABLE environment variable not set")
+        return prescan_cache
+    
     try:
         table = dynamodb.Table(PRESCAN_TABLE)
         logger.info(f"Loading prescan data from table: {PRESCAN_TABLE}")
         
         # Scan all items from prescan table
-        response = table.scan()
+        try:
+            response = table.scan()
+        except Exception as scan_error:
+            logger.error(f"Error during initial scan of {PRESCAN_TABLE}: {scan_error}", exc_info=True)
+            return prescan_cache
+            
         items = response.get('Items', [])
+        logger.info(f"First scan returned {len(items)} items, has more: {'LastEvaluatedKey' in response}")
         
+        page_count = 1
         while 'LastEvaluatedKey' in response:
-            response = table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
-            items.extend(response.get('Items', []))
+            page_count += 1
+            try:
+                response = table.scan(ExclusiveStartKey=response['LastEvaluatedKey'])
+                new_items = response.get('Items', [])
+                items.extend(new_items)
+                logger.info(f"Scan page {page_count} returned {len(new_items)} items, total so far: {len(items)}")
+            except Exception as page_error:
+                logger.error(f"Error during scan page {page_count}: {page_error}", exc_info=True)
+                break
         
-        logger.info(f"Loaded {len(items)} prescan records from DynamoDB")
+        logger.info(f"Loaded {len(items)} total prescan records from DynamoDB after {page_count} scan(s)")
         
         # Log a few sample keys for debugging
         if items:
-            sample_keys = [item.get('pdf_key', '') for item in items[:5]]
+            sample_keys = [item.get('pdf_key', 'NO_KEY') for item in items[:5]]
             logger.info(f"Sample prescan pdf_keys: {sample_keys}")
+        else:
+            logger.warning(f"No items found in prescan table {PRESCAN_TABLE}")
         
         # Build cache keyed by pdf_key
+        # Since there's a sort key, multiple records may exist per pdf_key
+        # We'll keep the most recent one (by scan_timestamp)
         for item in items:
             pdf_key = item.get('pdf_key', '')
             if pdf_key:
+                scan_timestamp = item.get('scan_timestamp', '')
+                
+                # Check if we already have this key and if this record is newer
+                existing = prescan_cache.get(pdf_key)
+                if existing:
+                    existing_timestamp = existing.get('scan_timestamp', '')
+                    if scan_timestamp <= existing_timestamp:
+                        continue  # Skip older record
+                
                 # Convert Decimal types to float/int for Excel compatibility
+                # Also handle nested dicts/lists that may contain Decimals
                 converted = {}
                 for key, value in item.items():
-                    if isinstance(value, Decimal):
-                        converted[key] = float(value) if '.' in str(value) else int(value)
-                    elif isinstance(value, dict):
-                        converted[key] = json.dumps(value)
-                    elif isinstance(value, list):
-                        converted[key] = ', '.join(str(v) for v in value)
-                    else:
-                        converted[key] = value
+                    converted[key] = convert_dynamodb_value(value)
                 prescan_cache[pdf_key] = converted
+            else:
+                logger.warning(f"Prescan item missing pdf_key: {item}")
         
-        logger.info(f"Built prescan cache with {len(prescan_cache)} entries")
+        logger.info(f"Built prescan cache with {len(prescan_cache)} unique pdf_keys from {len(items)} records")
+        
+        # Log all keys if there are few (for debugging)
+        if len(prescan_cache) <= 20:
+            logger.info(f"All prescan keys: {list(prescan_cache.keys())}")
                 
     except Exception as e:
         logger.error(f"Error loading prescan data: {e}", exc_info=True)
@@ -126,33 +190,101 @@ def load_all_prescan_data() -> dict:
     return prescan_cache
 
 
-def get_prescan_data(filename: str, collection_folder: str, prescan_cache: dict, log_misses: bool = False) -> dict:
+def extract_original_filename(chunk_filename: str) -> str:
+    """
+    Extract the original PDF filename from a processed chunk filename.
+    
+    During processing, files may have:
+    1. A prefix added: COMPLIANT_, REMEDIATED_, etc.
+    2. A chunk suffix: _chunk_N
+    
+    We need to strip both to get back to the original filename.
+    
+    Examples:
+        COMPLIANT_19_american_boy_a_chunk_4.pdf -> 19_american_boy_a.pdf
+        document_chunk_1.pdf -> document.pdf
+        REMEDIATED_report_chunk_3.pdf -> report.pdf
+        my_file.pdf -> my_file.pdf (no change)
+    
+    Args:
+        chunk_filename: The processed filename
+        
+    Returns:
+        The original filename, or the input if no patterns match
+    """
+    import re
+    
+    result = chunk_filename
+    
+    # Step 1: Remove known prefixes (COMPLIANT_, REMEDIATED_, etc.)
+    prefixes_to_remove = ['COMPLIANT_', 'REMEDIATED_', 'PROCESSED_', 'TAGGED_']
+    for prefix in prefixes_to_remove:
+        if result.upper().startswith(prefix.upper()):
+            result = result[len(prefix):]
+            break
+    
+    # Step 2: Remove _chunk_N suffix (before .pdf)
+    # Pattern: anything_chunk_N.pdf where N is one or more digits
+    match = re.match(r'^(.+)_chunk_\d+\.pdf$', result, re.IGNORECASE)
+    if match:
+        original_basename = match.group(1)
+        result = f"{original_basename}.pdf"
+    
+    return result
+
+
+def get_prescan_data(filename: str, collection_folder: str, prescan_cache: dict, log_misses: bool = False) -> tuple:
     """
     Look up prescan data from the pre-loaded cache.
     
+    The prescan data is stored for the ORIGINAL PDF file (before splitting into chunks).
+    So we need to convert chunk filenames back to original filenames.
+    
     Args:
-        filename: The PDF filename (e.g., 'document.pdf')
+        filename: The PDF filename (may be a chunk like 'document_chunk_1.pdf')
         collection_folder: The collection folder name
         prescan_cache: Pre-loaded prescan data dictionary
         log_misses: If True, log when prescan data is not found
         
     Returns:
-        dict with prescan data, or empty dict if not found
+        tuple of (dict with prescan data or empty dict, str with matching info for debugging)
     """
+    matching_info = ""
+    
     if not filename or not collection_folder:
+        matching_info = f"SKIPPED: missing filename='{filename}' or collection_folder='{collection_folder}'"
         if log_misses:
             logger.debug(f"Prescan lookup skipped - missing filename ({filename}) or collection_folder ({collection_folder})")
-        return {}
+        return {}, matching_info
     
-    # Construct the pdf_key to look up
-    pdf_key = f"pdf/{collection_folder}/{filename}"
+    # Convert chunk filename to original filename
+    # e.g., document_chunk_1.pdf -> document.pdf
+    original_filename = extract_original_filename(filename)
+    
+    # Construct the pdf_key to look up (prescan stores with pdf/ prefix)
+    pdf_key = f"pdf/{collection_folder}/{original_filename}"
+    
+    # Build matching info for debugging
+    if original_filename != filename:
+        matching_info = f"Chunk '{filename}' -> Original '{original_filename}' | Query: '{pdf_key}'"
+    else:
+        matching_info = f"Query: '{pdf_key}'"
     
     result = prescan_cache.get(pdf_key, {})
+    
+    if result:
+        matching_info += f" | FOUND"
+    else:
+        matching_info += f" | NOT FOUND in {len(prescan_cache)} cached records"
+        # Try to find similar keys for debugging
+        similar_keys = [k for k in prescan_cache.keys() if original_filename in k][:3]
+        if similar_keys:
+            matching_info += f" | Similar keys: {similar_keys}"
     
     if log_misses and not result:
         logger.debug(f"Prescan data NOT FOUND for pdf_key: {pdf_key}")
     
-    return result
+    return result, matching_info
 
 
 def parse_adobe_error(original_error: str) -> dict:
@@ -384,6 +516,7 @@ def create_excel_report(items: list, prescan_cache: dict) -> bytes:
         'Original Error',
         # Prescan data columns
         'Prescan Info Available',
+        'Prescan Matching Info',
         'Prescan Risk Level',
         'Prescan Complexity Score',
         'Prescan Risk Factors',
@@ -477,7 +610,7 @@ def create_excel_report(items: list, prescan_cache: dict) -> bytes:
         filename = item.get('filename', '')
         # Log first 10 lookups for debugging
         log_this_lookup = (row_num <= 12)  # row_num starts at 2
-        prescan = get_prescan_data(filename, collection_folder, prescan_cache, log_misses=log_this_lookup)
+        prescan, prescan_matching_info = get_prescan_data(filename, collection_folder, prescan_cache, log_misses=log_this_lookup)
         
         # Log the constructed key for first few rows
         if row_num <= 12:
@@ -514,9 +647,10 @@ def create_excel_report(items: list, prescan_cache: dict) -> bytes:
             original_error[:500],  # Truncate long errors
             # Prescan data
             prescan_available,
+            prescan_matching_info,
             prescan.get('risk_level', ''),
             prescan.get('complexity_score', ''),
-            prescan.get('risk_factors', ''),
+            format_for_excel(prescan.get('risk_factors', '')),
             prescan.get('total_images', ''),
             prescan.get('total_text_chars', ''),
             prescan.get('total_fonts', ''),
@@ -544,11 +678,11 @@ def create_excel_report(items: list, prescan_cache: dict) -> bytes:
                 cell.fill = crash_fill
     
     # Auto-adjust column widths - updated for new columns including prescan
-    # Original columns + prescan columns (added Prescan Info Available column)
+    # Original columns + prescan columns (added Prescan Matching Info column)
     column_widths = [
         30, 30, 50, 25, 12, 25, 25, 12, 10, 40, 10, 12, 12, 12, 12, 10, 12, 50, 12, 20, 40, 12, 25, 40, 60,
-        # Prescan columns: Info Available, Risk Level, Complexity, Risk Factors, etc.
-        15, 12, 12, 40, 12, 12, 12, 12, 15, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12
+        # Prescan columns: Info Available, Matching Info, Risk Level, Complexity, Risk Factors, etc.
+        15, 60, 12, 12, 40, 12, 12, 12, 12, 15, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12
     ]
     for col, width in enumerate(column_widths, 1):
         ws.column_dimensions[get_column_letter(col)].width = width
