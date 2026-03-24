@@ -238,98 +238,115 @@ def scan_all_items(table):
     return items
 
 
-def get_in_flight_timing_data(filename: str, api_type: str) -> dict:
+def load_all_timing_data() -> dict:
     """
-    Look up timing data from the adobe-api-in-flight-tracker table.
+    Load all timing data from the in-flight tracker table into a dictionary.
     
-    Searches for file entries matching the filename and api_type.
-    Returns the most recent entry's started_at and released_at timestamps.
+    This is MUCH more efficient than individual lookups - one scan instead of
+    thousands of filtered scans.
     
-    Note: released_at may be None if the container crashed before releasing the slot.
-    In that case, the entry will have started_at but no released_at, indicating
-    the process did not complete normally. However, if the ECS task failure tracker
-    captured the crash, there will be a crashed_at timestamp instead.
-    
-    Args:
-        filename: The PDF filename to look up
-        api_type: The API type ('autotag' or 'extract')
-        
     Returns:
-        dict with 'started_at', 'released_at', 'crashed', 'crashed_at', and 'crash_details' keys
+        dict mapping filename to timing data dict (most recent entry per filename)
     """
-    result = {
-        'started_at': None,
-        'released_at': None,
-        'crashed': False,  # True if started_at exists but no released_at (container crash)
-        'crashed_at': None,  # Timestamp from ECS task failure event
-        'crash_details': None  # Details about the crash (exit code, reason, etc.)
-    }
+    timing_cache = {}
     
     try:
         table = dynamodb.Table(RATE_LIMIT_TABLE)
+        logger.info(f"Loading timing data from table: {RATE_LIMIT_TABLE}")
         
-        # Scan for file entries matching this filename
-        # Include both released and unreleased entries
+        # Scan all file entries (those starting with IN_FLIGHT_FILE_PREFIX)
         response = table.scan(
-            FilterExpression='begins_with(counter_id, :prefix) AND filename = :filename',
+            FilterExpression='begins_with(counter_id, :prefix)',
             ExpressionAttributeValues={
-                ':prefix': IN_FLIGHT_FILE_PREFIX,
-                ':filename': filename
+                ':prefix': IN_FLIGHT_FILE_PREFIX
             }
         )
         
         items = response.get('Items', [])
+        scan_count = 1
         
-        # Handle pagination
         while 'LastEvaluatedKey' in response:
             response = table.scan(
-                FilterExpression='begins_with(counter_id, :prefix) AND filename = :filename',
+                FilterExpression='begins_with(counter_id, :prefix)',
                 ExpressionAttributeValues={
-                    ':prefix': IN_FLIGHT_FILE_PREFIX,
-                    ':filename': filename
+                    ':prefix': IN_FLIGHT_FILE_PREFIX
                 },
                 ExclusiveStartKey=response['LastEvaluatedKey']
             )
             items.extend(response.get('Items', []))
+            scan_count += 1
         
-        if not items:
-            logger.debug(f"No in-flight tracking data found for {filename}")
-            return result
+        logger.info(f"Loaded {len(items)} timing records from DynamoDB after {scan_count} scan(s)")
         
-        # Filter by api_type if specified and available
-        if api_type:
-            matching_items = [item for item in items if item.get('api_type') == api_type]
-            if matching_items:
-                items = matching_items
+        # Build cache keyed by filename, keeping the most recent entry per file
+        # Group by filename first
+        by_filename = {}
+        for item in items:
+            filename = item.get('filename', '')
+            if not filename:
+                continue
+            
+            if filename not in by_filename:
+                by_filename[filename] = []
+            by_filename[filename].append(item)
         
-        # Sort by started_at descending to get the most recent entry
-        items.sort(key=lambda x: x.get('started_at', ''), reverse=True)
+        # For each filename, pick the most recent entry (by started_at)
+        for filename, file_items in by_filename.items():
+            # Sort by started_at descending
+            file_items.sort(key=lambda x: x.get('started_at', ''), reverse=True)
+            latest = file_items[0]
+            
+            # Build the timing data dict
+            timing_data = {
+                'started_at': latest.get('started_at'),
+                'released_at': latest.get('released_at'),
+                'crashed': False,
+                'crashed_at': latest.get('crashed_at'),
+                'crash_details': latest.get('crash_details')
+            }
+            
+            # Determine if this was a crash
+            if timing_data['crashed_at']:
+                timing_data['crashed'] = True
+                if not timing_data['released_at']:
+                    timing_data['released_at'] = timing_data['crashed_at']
+            elif timing_data['started_at'] and not timing_data['released_at']:
+                if not latest.get('released'):
+                    timing_data['crashed'] = True
+            
+            timing_cache[filename] = timing_data
         
-        # Get the most recent entry
-        latest = items[0]
-        result['started_at'] = latest.get('started_at')
-        result['released_at'] = latest.get('released_at')
-        result['crashed_at'] = latest.get('crashed_at')
-        result['crash_details'] = latest.get('crash_details')
-        
-        # Determine if this was a crash
-        # crashed_at is set by the ECS task failure tracker when a container crashes
-        if result['crashed_at']:
-            result['crashed'] = True
-            # Use crashed_at as released_at if not already set
-            if not result['released_at']:
-                result['released_at'] = result['crashed_at']
-        elif result['started_at'] and not result['released_at']:
-            # No crashed_at but also no released_at - likely a crash that wasn't captured
-            if not latest.get('released'):
-                result['crashed'] = True
-                logger.info(f"File {filename} appears to have crashed (started_at exists, no released_at)")
-        
-        return result
+        logger.info(f"Built timing cache with {len(timing_cache)} unique filenames")
+        return timing_cache
         
     except Exception as e:
-        logger.warning(f"Error looking up in-flight timing data for {filename}: {e}")
-        return result
+        logger.error(f"Error loading timing data: {e}", exc_info=True)
+        return {}
+
+
+def get_timing_data_from_cache(filename: str, timing_cache: dict) -> dict:
+    """
+    Look up timing data from the pre-loaded cache.
+    
+    Args:
+        filename: The PDF filename to look up
+        timing_cache: Pre-loaded timing data dictionary
+        
+    Returns:
+        dict with 'started_at', 'released_at', 'crashed', 'crashed_at', and 'crash_details' keys
+    """
+    default_result = {
+        'started_at': None,
+        'released_at': None,
+        'crashed': False,
+        'crashed_at': None,
+        'crash_details': None
+    }
+    
+    if not filename:
+        return default_result
+    
+    return timing_cache.get(filename, default_result)
 
 
 def create_excel_report(items: list, prescan_cache: dict) -> bytes:
@@ -577,13 +594,29 @@ def handler(event, context):
             'body': json.dumps({'message': 'No analysis data found'})
         }
     
+    # Load all cache data upfront for efficiency (single scans instead of per-record lookups)
+    import time
+    cache_start = time.time()
+    
+    logger.info("Loading timing data from in-flight tracker...")
+    timing_cache = load_all_timing_data()
+    
+    logger.info("Loading prescan data...")
+    prescan_cache = load_all_prescan_data()
+    
+    cache_elapsed = time.time() - cache_start
+    logger.info(f"Cache loading completed in {cache_elapsed:.1f}s")
+    
     # Enrich items with timing data
     # Priority: 1) Use timing data stored in failure analysis table (permanent)
-    #           2) Fall back to in-flight tracker (may have expired)
-    logger.info(f"Enriching items with timing data")
+    #           2) Fall back to in-flight tracker cache (may have expired)
+    enrich_start = time.time()
+    logger.info(f"Enriching {len(items)} items with timing data")
+    items_with_stored_timing = 0
+    items_with_cache_timing = 0
+    
     for item in items:
         filename = item.get('filename', '')
-        api_type = item.get('api_type', '')
         
         # Check if timing data is already in the failure analysis record (new approach)
         started_at = item.get('started_at', '')
@@ -593,10 +626,10 @@ def handler(event, context):
             # Use timing data from failure analysis table (permanent storage)
             item['released_at'] = failed_at  # Use failed_at as released_at for consistency
             item['crashed'] = True  # If we have failure analysis, it was a failure
-            logger.debug(f"Using timing data from failure analysis table for {filename}")
+            items_with_stored_timing += 1
         elif filename:
-            # Fall back to in-flight tracker for older entries
-            timing_data = get_in_flight_timing_data(filename, api_type)
+            # Fall back to in-flight tracker cache for older entries
+            timing_data = get_timing_data_from_cache(filename, timing_cache)
             if not started_at:
                 item['started_at'] = timing_data.get('started_at', '')
             if not item.get('released_at'):
@@ -604,13 +637,14 @@ def handler(event, context):
             item['crashed'] = timing_data.get('crashed', False)
             item['crashed_at'] = timing_data.get('crashed_at', '')
             item['crash_details'] = timing_data.get('crash_details')
+            if timing_data.get('started_at'):
+                items_with_cache_timing += 1
+    
+    enrich_elapsed = time.time() - enrich_start
+    logger.info(f"Enrichment completed in {enrich_elapsed:.1f}s - {items_with_stored_timing} with stored timing, {items_with_cache_timing} from cache")
     
     # Sort by timestamp descending
     items.sort(key=lambda x: x.get('analysis_timestamp', ''), reverse=True)
-    
-    # Load all prescan data upfront for efficiency
-    logger.info("Loading prescan data...")
-    prescan_cache = load_all_prescan_data()
     
     # Generate Excel report
     excel_bytes = create_excel_report(items, prescan_cache)

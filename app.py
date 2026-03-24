@@ -1312,7 +1312,7 @@ class PDFAccessibility(Stack):
             function_name="failure-analysis-report",
             code=lambda_.DockerImageCode.from_image_asset("lambda/failure-analysis-report"),
             memory_size=1024,
-            timeout=Duration.seconds(300),
+            timeout=Duration.seconds(900),  # Increased from 300 to handle growing data volume
             architecture=lambda_arch,
             environment={
                 "ANALYSIS_TABLE": pdf_failure_analysis_table.table_name,
@@ -1416,8 +1416,8 @@ class PDFAccessibility(Stack):
             runtime=lambda_.Runtime.PYTHON_3_12,
             handler="main.handler",
             code=lambda_.Code.from_asset("lambda/success-rate-widget"),
-            memory_size=128,
-            timeout=Duration.seconds(10),
+            memory_size=256,
+            timeout=Duration.seconds(30),
             architecture=lambda_arch,
             environment={
                 "RATE_LIMIT_TABLE": adobe_rate_limit_table.table_name,
