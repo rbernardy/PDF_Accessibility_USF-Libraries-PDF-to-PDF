@@ -55,17 +55,38 @@ def convert_dynamodb_value(value):
         return value
 
 
+def sanitize_for_excel(value):
+    """
+    Remove illegal characters that cannot be used in Excel worksheets.
+    
+    Excel (via openpyxl) doesn't allow control characters (0x00-0x1F except tab/newline/carriage return).
+    This function strips those characters from strings.
+    """
+    if not isinstance(value, str):
+        return value
+    
+    # Remove control characters except tab (0x09), newline (0x0A), carriage return (0x0D)
+    # These are the only control chars allowed in XML (which Excel uses internally)
+    import re
+    # Pattern matches control chars 0x00-0x08, 0x0B-0x0C, 0x0E-0x1F
+    illegal_pattern = re.compile(r'[\x00-\x08\x0b\x0c\x0e-\x1f]')
+    return illegal_pattern.sub('', value)
+
+
 def format_for_excel(value):
     """
     Format a value for Excel cell output.
     Converts lists and dicts to readable strings.
+    Sanitizes strings to remove illegal characters.
     """
     if isinstance(value, list):
-        return ', '.join(str(v) for v in value)
+        result = ', '.join(str(v) for v in value)
     elif isinstance(value, dict):
-        return json.dumps(value)
+        result = json.dumps(value)
     else:
-        return value
+        result = value
+    
+    return sanitize_for_excel(result)
 
 
 def extract_collection_folder(s3_key: str) -> str:
@@ -670,7 +691,9 @@ def create_excel_report(items: list, prescan_cache: dict) -> bytes:
         ]
         
         for col, value in enumerate(row_data, 1):
-            cell = ws.cell(row=row_num, column=col, value=value)
+            # Sanitize string values to remove illegal Excel characters
+            sanitized_value = sanitize_for_excel(value) if isinstance(value, str) else value
+            cell = ws.cell(row=row_num, column=col, value=sanitized_value)
             cell.border = thin_border
             cell.alignment = Alignment(vertical='top', wrap_text=True)
             # Highlight crashed rows
