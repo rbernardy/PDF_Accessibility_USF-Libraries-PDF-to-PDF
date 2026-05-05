@@ -13,6 +13,20 @@ With the original WCAG 2.1 Level II compliance deadline for public facing pdfs  
 
 ---
 
+## AI-Assisted Development (AWS Kiro)
+
+As part of this implementation, AWS Kiro was used as an AI-assisted development tool to support:
+
+* Requirements clarification and refinement
+* Iterative code development and debugging
+* Documentation generation and maintenance
+
+Unlike traditional code-completion tools, Kiro’s spec-driven approach provided a structured way to move from conceptual design to working implementation. This was particularly helpful given the multi-component nature of the PDF remediation pipeline, institutional needs, and the need to align behavior across AWS services and open-source components.
+
+While not required to reproduce this implementation, Kiro materially reduced development time and improved consistency across the codebase.
+
+---
+
 # PDF Accessibility Solution - Fork Improvements Summary
 
 This document summarizes all the enhancements, features, and bug fixes implemented in this fork of the PDF Accessibility PDF-to-PDF Solution.
