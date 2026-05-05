@@ -3,6 +3,11 @@
 This repository provides two complementary solutions for PDF accessibility:
 
 1. **PDF-to-PDF Remediation**: Processes PDFs and maintains the PDF format while improving accessibility.
+> **Note:**
+> The University of South Florida Libraries has developed an extended implementation of this solution focused on end‑to‑end PDF‑to‑PDF accessibility remediation, including large‑scale batch workflows and AWS‑based automation.  
+>  
+> For details, see:  
+> [PDF Accessibility – USF Libraries Implementation](docs/USF-Libraries-PDF-to-PDF-remediation.md)
 2. **PDF-to-HTML Remediation**: Converts PDFs to accessible HTML format.
 
 Both solutions leverage AWS services and generative AI to improve content accessibility according to WCAG 2.1 Level AA standards.
