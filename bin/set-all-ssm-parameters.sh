@@ -12,10 +12,10 @@ set -e
 
 # Default values
 DEFAULT_QUEUE_ENABLED="false"
-DEFAULT_QUEUE_BATCH_SIZE="40"
-DEFAULT_QUEUE_BATCH_SIZE_LOW_LOAD="15"
+DEFAULT_QUEUE_BATCH_SIZE="80"
+DEFAULT_QUEUE_BATCH_SIZE_LOW_LOAD="100"
 DEFAULT_QUEUE_MAX_IN_FLIGHT="12"
-DEFAULT_QUEUE_MAX_EXECUTIONS="75"
+DEFAULT_QUEUE_MAX_EXECUTIONS="100"
 DEFAULT_ADOBE_API_MAX_IN_FLIGHT="100"
 DEFAULT_ADOBE_API_RPM="200"
 DEFAULT_ADOBE_API_RPS="5"
@@ -23,7 +23,8 @@ DEFAULT_MAX_RETRIES="3"
 DEFAULT_RECONCILER_ENABLED="true"
 DEFAULT_RECONCILER_MAX_DRIFT="5"
 DEFAULT_EMAIL_ENABLED="false"
-DEFAULT_SENDER_EMAIL="lib-systems@usf.edu"
+DEFAULT_SENDER_EMAIL="${AWS_DEFAULT_EMAIL_ADDRESS:-}"
+DEFAULT_REMEDIATION_DEADLINE="2027-04-26"
 
 USE_DEFAULTS=false
 
@@ -162,6 +163,14 @@ if [ "$USE_DEFAULTS" = false ]; then
         echo "  (skipped)"
     fi
 fi
+
+# Remediation Deadline
+echo ""
+echo "--- Remediation Deadline ---"
+
+CURRENT=$(get_current "/pdf-processing/remediation-deadline-date" "$DEFAULT_REMEDIATION_DEADLINE")
+VALUE=$(prompt_value "/pdf-processing/remediation-deadline-date" "$CURRENT" "$DEFAULT_REMEDIATION_DEADLINE" "remediation-deadline-date: Target completion date in YYYY-MM-DD format")
+set_param "/pdf-processing/remediation-deadline-date" "$VALUE"
 
 echo ""
 echo "========================================"

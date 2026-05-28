@@ -1,7 +1,12 @@
 #!/bin/bash
 # Set the sender email SSM parameter for PDF failure digest notifications
 
-EMAIL="${1:-lib-systems@usf.edu}"
+EMAIL="${1:-$AWS_DEFAULT_EMAIL_ADDRESS}"
+
+if [ -z "$EMAIL" ]; then
+    echo "ERROR: No email provided and AWS_DEFAULT_EMAIL_ADDRESS is not set"
+    exit 1
+fi
 
 echo "Setting /pdf-processing/sender-email to: $EMAIL"
 
