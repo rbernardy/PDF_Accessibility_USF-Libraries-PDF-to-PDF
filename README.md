@@ -8,6 +8,7 @@ This repository provides two complementary solutions for PDF accessibility:
 >  
 > For details, see:  
 > [PDF Accessibility – USF Libraries Implementation](docs/USF-Libraries-PDF-to-PDF-remediation.md)
+> [Installation Instructions (USF Libraries Fork)](docs/usfl-installation-instructions.md)
 2. **PDF-to-HTML Remediation**: Converts PDFs to accessible HTML format.
 
 Both solutions leverage AWS services and generative AI to improve content accessibility according to WCAG 2.1 Level AA standards.
