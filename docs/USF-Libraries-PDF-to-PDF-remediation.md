@@ -1,15 +1,20 @@
-![USF Libraries PDF Accessbility PDF-to-PDF](images/pdf-accessibility-usf-libraries-pdf-to-pdf.png)
+![USF Libraries PDF Accessibility PDF-to-PDF](images/pdf-accessibility-usf-libraries-pdf-to-pdf.png)
+## Author
+Richard R. Bernardy, Jr, University of South Florida Libraries  
+GitHub: <https://github.com/rbernardy>  
+Email: rbernard@usf.edu
+
 ## About this implementation
 
 This implementation was developed by the University of South Florida Libraries to support large‑scale PDF‑to‑PDF accessibility remediation workflows.
 
-Primary development and integration were led by Richard R. Bernardy, Jr during the Spring 2026 semester, with initial consultation and architectural guidance received from AWS Solutions Architect Gabriel Brackman, while working closely with the USF Libraries Digital Initiatives (Special Collections) and Scholarly Communications (Integrated Research & Impact Services) teams.
+Primary development and integration were led by Richard R. Bernardy, Jr during the Spring 2026 semester, with initial consultation and architectural guidance received from AWS Solutions Architect Gabriel Brackman, while working closely with Dr. Amanda Boczar/USF Libraries Digital Initiatives (Special Collections) and Jason Boczar/Scholarly Communications (Integrated Research & Impact Services) teams.
 
 ---
 
 The initial request for updates to the software was folder preservation throughout the processing cycle. Both teams are strongly collection oriented, they wanted to be able to drop a collection folder containing multiple pdfs into the incoming folder, and have that folder structure be preserved through each stage of processing across the pdf, temp, and result project S3 bucket folders.
 
-With the original WCAG 2.1 Level II compliance deadline for public facing pdfs  of 2026-04-24,  we received access to the Adobe Developer console in order to create the required access key for the Adobe API in mid January 2026. The next several phases of improvements were to provide a throughput sufficient to process our pdfs with plenty of time left for the teams to get the updated content back into our Digtal Commons-based respository.
+With the original WCAG 2.1 Level II compliance deadline for public facing pdfs  of 2026-04-24,  we received access to the Adobe Developer console in order to create the required access key for the Adobe API in mid January 2026. The next several phases of improvements were to provide a throughput sufficient to process our pdfs with plenty of time left for the teams to get the updated content back into our Digital Commons-based repository.
 
 ---
 
