@@ -7,7 +7,7 @@ This repository provides two complementary solutions for PDF accessibility:
 > The University of South Florida Libraries has developed an extended implementation of this solution focused on end‑to‑end PDF‑to‑PDF accessibility remediation, including large‑scale batch workflows and AWS‑based automation.  
 >  
 > For details, see:  
-> [PDF Accessibility – USF Libraries Implementation](docs/USF-Libraries-PDF-to-PDF-remediation.md)
+> [PDF Accessibility – USF Libraries Implementation](docs/USF-Libraries-PDF-to-PDF-remediation.md)  
 > [Installation Instructions (USF Libraries Fork)](docs/usfl-installation-instructions.md)
 2. **PDF-to-HTML Remediation**: Converts PDFs to accessible HTML format.
 
